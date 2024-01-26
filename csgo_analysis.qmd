@@ -1,0 +1,424 @@
+---
+title: "CSGO eda"
+author: "Jesse Coulson, Adam Sanden"
+date: "`r format(Sys.time(), '%m/%d/%y')`"
+format: html
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(leaps)
+library(randomForest)
+library(tidymodels)
+library(gtsummary)
+set.seed(23456)
+```
+
+Load the data (Jesse)
+```{r}
+df <-read.csv("players.csv")
+
+#turn dataframe into tibble
+csgo_data <- as_tibble(df)
+csgo_data
+
+df2<-read.csv("results.csv")
+results_data <-as_tibble(df2)
+
+
+results_data
+```
+Since only some events have a best of 3 rule-set, we decided to remove the individual map statistics and just keep the overall statistics and take the average kills deaths, assists, hs, kddiff fkdiff for the whole match, otherwise any 3 game match would skew the data compared to a 1 game match. for the sake of the EDA we will be looking only at Single game matches to avoid match stats being skewed.
+
+#remove unecessary columns
+```{r}
+#get rid of individual round data (Jesse)
+csgo_data <- df %>% select(player_name, team, opponent, country, player_id, match_id, event_id,event_name, best_of, kills, assists, deaths, hs,kddiff,  fkdiff, rating)
+csgo_data
+
+#make a separate data set to focus just on 1 game matches
+csgo_single <- df %>% 
+  filter(best_of == 1)
+csgo_single <- csgo_single %>% 
+  select(player_name, team, opponent, country, player_id, match_id, event_id,event_name, best_of, kills, assists, deaths, hs,kddiff,  fkdiff, rating)
+csgo_single
+            
+
+```
+
+We got the average rating for each player and 1 standard deviation above and below.
+#Explore rating var
+```{r}
+#get average rating
+mean <- mean(csgo_data$rating)
+
+#get one standrd deviation above average rating
+sd_mean <- mean + sd(csgo_single$rating)
+sd_mean
+
+sd_mean_2 <- sd_mean + sd(csgo_single$rating)
+sd_mean_2
+
+sd_mean_negative_2 <- sd_mean - 2*  sd(csgo_single$rating)
+sd_mean_negative_2
+
+#check how many games dataset has
+length(unique(csgo_single$match_id))
+
+
+```
+We find outliers in our dataset
+#Show outliers in rating
+```{r}
+#no missing values in player rating
+sum(is.na(csgo_single$rating))
+
+#missing values for games that did not reach max rounds
+sum(is.na(csgo_single))
+
+
+ratings.outliers <- filter(csgo_single, rating < sd_mean_negative_2 | rating>sd_mean_2)
+print(ratings.outliers)
+
+csgo_arranged <- csgo_single%>%
+  group_by(match_id) %>% 
+  arrange(match_id)
+
+csgo_arranged
+
+
+
+```
+Histograms of raw numebers
+#simple histograms
+```{r}
+#rating
+ggplot(csgo_single, aes(rating)) + geom_histogram(binwidth = 0.1)
+#kills
+ggplot(csgo_single, aes(kills)) + geom_histogram(binwidth = 1)
+#assists
+ggplot(csgo_single, aes(assists)) + geom_histogram(binwidth = .5)
+#deaths
+ggplot(csgo_single, aes(deaths)) + geom_histogram(binwidth = 1)
+#headshot
+ggplot(csgo_single, aes(hs)) + geom_histogram(binwidth = 1)
+```
+Histograms of average stats per game
+```{r}
+#rating
+ggplot(csgo_single, aes(rating)) + geom_histogram(binwidth = 0.1)
+#avg kills
+ggplot(csgo_single, aes(kills)) + geom_histogram(binwidth = 1)
+#avg assists
+ggplot(csgo_single, aes(assists)) + geom_histogram(binwidth = .5)
+#avg deaths
+ggplot(csgo_single, aes(deaths)) + geom_histogram(binwidth = 1)
+#avg headshot
+ggplot(csgo_single, aes(hs)) + geom_histogram(binwidth = 1)
+```
+#calculating kda
+```{r}
+#Creating a column for kda
+csgo_single <- csgo_single %>% 
+  mutate(kda = (kills + assists)/deaths)
+
+```
+
+#see relationship between kda and given rating
+```{r}
+ggplot(csgo_single, aes(x = kda, y = rating)) +
+  geom_point() + 
+ geom_smooth(aes(x = kda, y= rating ),se=FALSE)
+```
+
+
+
+Join the match results data with the player statistics dataset in order to measure how good of a predictor each statistic is for predicitng whether a team wins or loses a match
+# Add win column using results dataset
+```{r}
+#find winning team from results columns
+results_data <- results_data %>%
+  mutate(winner = ifelse(result_1 > result_2, team_1, team_2))
+
+
+csgo_single <- csgo_single %>%
+  left_join(results_data, by = c("match_id"), relationship = 'many-to-many') %>% 
+  mutate(Outcome = ifelse(team == winner, "Win", "Loss"))
+
+
+csgo_single <- csgo_single %>% select(player_name, date, team, opponent, country, player_id, match_id, event_id.x, event_name, kills, kda,  assists, deaths, hs, kddiff, fkdiff, rating, winner, Outcome)
+ 
+#csgo_single 
+csgo_single <- na.omit(csgo_single) #removing na rows
+
+csgo_single
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+### Exploration of player statistics on game outome
+
+```{r}
+#kills
+ggplot(csgo_single) + 
+  geom_boxplot(aes(y = kills, x=as.factor(Outcome)), alpha = 0.2)
+```
+
+```{r}
+#assists
+ggplot(csgo_single) + 
+  geom_boxplot(aes(y = assists, x=as.factor(Outcome)), alpha = 0.2)
+```
+
+```{r}
+# deaths
+ggplot(csgo_single) + 
+  geom_boxplot(aes(y = deaths, x=as.factor(Outcome)), alpha = 0.2)
+```
+
+```{r}
+csgo_single %>%
+  filter_all(any_vars(is.na(.)))
+# kda
+ggplot(csgo_single) + 
+  geom_boxplot(aes(y = kda, x=as.factor(Outcome)), alpha = 0.2)
+```
+
+```{r}
+# headshots
+ggplot(csgo_single) + 
+  geom_boxplot(aes(y = hs, x=as.factor(Outcome)), alpha = 0.2)
+```
+
+```{r}
+#fkdiff, firstkills-firstdeaths in the match
+ggplot(csgo_single) + 
+  geom_boxplot(aes(y = fkdiff, x=as.factor(Outcome)), alpha = 0.2)
+```
+
+
+
+
+
+
+#best subset
+```{r}
+
+stats <- csgo_single %>% select(kills, deaths, assists,hs, Outcome,rating)
+#stats$Outcome <- as.numeric(stats$Outcome)
+stats$Outcome <- ifelse(stats$Outcome == "Win", 1, 0)
+pm.subsets <- regsubsets(data=stats, Outcome ~ .)
+plot(pm.subsets, scale='adjr2')
+plot(pm.subsets, scale='bic')
+plot(pm.subsets, scale='Cp')
+
+
+```
+
+##Modelling for vars
+
+```{r}
+mod1 <- glm(data = stats, formula = rating ~ kills + assists + deaths)
+gtsummary::tbl_regression(mod1)
+
+mod2 <-glm(data = stats, formula = Outcome ~ kills + assists + deaths + hs + rating)
+gtsummary::tbl_regression(mod1, exponentiate = TRUE)
+```
+
+
+##Seperate by year, group by player, and take the mean of rating
+```{r}
+
+#extract year into column
+csgo_by_year <- csgo_single %>%
+  mutate(year = as.integer(substr(date, 1, 4))) 
+
+#for csgo_single also add year
+csgo_single <- csgo_single %>%
+  mutate(year = as.integer(substr(date, 1, 4))) 
+
+#group into year and player name
+csgo_by_year <- csgo_by_year %>%
+  group_by(year, player_name) 
+
+
+#summarise mean rating
+csgo_by_year <- csgo_by_year%>%  
+  summarise(mean_rating = mean(rating))
+
+#display in descending mean rating order
+csgo_by_year <- arrange(csgo_by_year, desc(mean_rating))
+csgo_by_year
+
+#sort into descending by year
+csgo_by_year <- arrange(csgo_by_year, desc(year))
+csgo_by_year
+
+```
+## Find players one standard deviation above the mean mean_rating
+```{r}
+
+overall_rating_mean <- mean(csgo_by_year$mean_rating, na.rm = TRUE)
+overall_rating_sd <- sd(csgo_by_year$mean_rating, na.rm = TRUE)
+
+#get all players who are over one standard deviation above avg
+star_players <- csgo_by_year %>%
+  filter(mean_rating > (overall_rating_mean + overall_rating_sd))
+
+below_players <- csgo_by_year %>%
+  filter(mean_rating < (overall_rating_mean - overall_rating_sd))
+
+avg_players <- csgo_by_year %>%
+  filter(mean_rating < (overall_rating_mean + overall_rating_sd) & mean_rating > (overall_rating_mean - overall_rating_sd))
+
+count_stars <- nrow(star_players)
+count_avg <- nrow(avg_players)
+count_below <- nrow(below_players)
+
+
+
+#count of each type of player
+count_stars
+count_avg
+count_below
+
+
+print(paste("Star: ", count_stars))
+print(paste("Avg: ", count_avg))
+print(paste("Below: ", count_below))
+
+star_players
+avg_players
+below_players
+
+
+csgo_single
+```
+
+## Create individual match data
+```{r}
+#add the players to temp
+t_star_players <- mutate(star_players, player_type = "star")
+t_below_players <- mutate(below_players, player_type = "below_average")
+t_avg_players <- mutate(avg_players, player_type = "average")
+
+#combine into one tibble
+all_players <- bind_rows(t_star_players, t_below_players, t_avg_players)
+
+#join with csgo data based on the player name and year
+combined_data <- csgo_single %>%
+  left_join(all_players, by = c("player_name", "year"))
+
+#make new tibble that only has necessary variables, combining players into their teams that played together
+match_summary <- combined_data %>%
+  group_by(match_id, team) %>%
+  summarise(
+    num_star = sum(player_type == "star"),
+    num_average = sum(player_type == "average"),
+    num_below_average = sum(player_type == "below_average"),
+    outcome = first(Outcome)
+  ) %>%
+  filter(num_star + num_average+num_below_average == 5)
+
+
+match_summary
+
+match_summary <- match_summary %>%
+  mutate(outcome = ifelse(outcome == "Win", 1, 0))
+
+#make a column for outcome in binary form
+match_summary <- match_summary %>%
+  mutate(outcome = factor(outcome))
+
+cols<-c('num_star', 'num_average', 'num_below_average')
+match_summary$composition <- do.call(paste, c(match_summary[cols], sep = "-")) 
+match_summary$composition <- relevel(factor(match_summary$composition), ref = "0-5-0")
+
+tab <- table(match_summary$composition)
+match_summary <- match_summary[match_summary$composition %in% names(tab)[tab>30],]
+
+ ggplot(match_summary, aes(x = factor(num_star), fill = as.factor(outcome))) +
+   geom_bar() +
+   labs(x = "Number of Stars", y = "Count") +
+   ggtitle("Game Outcomes by Number of Stars")
+ 
+ ggplot(match_summary, aes(x = composition, fill = as.factor(outcome))) +
+  geom_bar(position = "fill") +
+  labs(x = "Team Composition") +
+  ggtitle("Game Outcomes by Team Composition")
+
+
+```
+## Final Models
+```{r}
+
+match_summary
+
+ #split data into training and testing, 80 20
+ init_split <- initial_split(match_summary, prop = 0.8)
+ train <- training(init_split)
+ test  <- testing(init_split)
+ 
+# #linear model
+ glm_star <- glm(data = train, formula = outcome ~ num_star, family =  "binomial")
+ glm_avg <- glm(data = train, formula = outcome ~ num_average, family =  "binomial")
+ glm_low <- glm(data = train, formula = outcome ~ num_below_average, family =  "binomial")
+ 
+ tbl_regression(glm_star, exponentiate = TRUE)
+ tbl_regression(glm_avg, exponentiate = TRUE)
+ tbl_regression(glm_low, exponentiate = TRUE)
+ 
+ 
+ predicted_values <- predict(glm_star, newdata = test)
+ 
+ 
+ glm_total_predictions <- ifelse(predicted_values > 0.5, 1, 0)
+ 
+#display accuracy
+ accuracy <- mean(glm_total_predictions == test$outcome)
+ accuracy
+ 
+glm_comp <- glm(data = train, formula = outcome ~ composition, family =  "binomial")
+summary(glm_comp)
+ 
+tbl_regression(glm_comp, exponentiate = TRUE)
+
+
+phat.win <- predict(glm_comp, newdata = test ,type = 'response')
+
+
+plot.mpp <- data.frame(pred.prob = phat.win, 
+                       pred = rbinom(n = length(phat.win), 
+                                           size = 1, 
+                                           p = phat.win),
+                       truth = test$outcome)
+
+plot.mpp <- plot.mpp %>% 
+  mutate(
+    pred = factor(pred),
+    truth = factor(truth))
+
+print("Matrix:")
+caret::confusionMatrix(plot.mpp$pred, plot.mpp$truth, positive="1")
+ 
+
+```
+
+
+
+
+
+
+

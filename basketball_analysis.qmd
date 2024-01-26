@@ -1,0 +1,477 @@
+---
+title: "EDA_Basketball"
+format: html
+editor: visual
+---
+
+```{r}
+# Load in packages
+library(tidyverse)
+library(leaps)
+library(randomForest)
+library(tidymodels)
+library(gtsummary)
+```
+
+```{r}
+# # Load in data (Saul)
+# games <- read.csv("C:/Users/Saul/OneDrive/Desktop/CSCI385/data/games.csv")
+# games_details <- read.csv("C:/Users/Saul/OneDrive/Desktop/CSCI385/data/games_details.csv")
+# players <- read.csv("C:/Users/Saul/OneDrive/Desktop/CSCI385/data/players.csv")
+# ranking <- read.csv("C:/Users/Saul/OneDrive/Desktop/CSCI385/data/ranking.csv")
+# teams <- read.csv("C:/Users/Saul/OneDrive/Desktop/CSCI385/data/teams.csv")
+```
+
+**Note: 'game_details' looks like the most promising data set.**
+
+```{r}
+# Load in data (Jhet)
+games <- read.csv("C:/Users/cjhet/Desktop/school/data_science/basketball_data/games.csv")
+games_details <- read.csv("C:/Users/cjhet/Desktop/school/data_science/basketball_data/games_details.csv")
+players <- read.csv("C:/Users/cjhet/Desktop/school/data_science/basketball_data/players.csv")
+ranking <- read.csv("C:/Users/cjhet/Desktop/school/data_science/basketball_data/ranking.csv")
+teams <- read.csv("C:/Users/cjhet/Desktop/school/data_science/basketball_data/teams.csv")
+```
+
+```{r}
+# Var names converted to lower case
+names(games_details) <- tolower(names(games_details))
+names(games) <- tolower(names(games))
+
+# Joining games with game details by game-id to get information necessary to make the outcome variable
+full_games_details <- inner_join(games_details, games, by = 'game_id', relationship = 'many-to-many')
+
+full_games_details <- full_games_details %>% 
+  select(-c(nickname, comment))
+
+full_games_details <- full_games_details %>% separate(min, c("minutes", "seconds"), sep = ":") %>% 
+  mutate(min_played = as.numeric(minutes) + (as.numeric(seconds) / 60))
+```
+
+```{r}
+# Data frame that only contains the players starting in the game (allows us to keep the position variable)
+starters <- full_games_details %>% 
+  filter(start_position != "")
+```
+
+```{r}
+starters_sum <- starters %>%
+  group_by(player_name) %>%
+  arrange(player_name) %>%
+  mutate(
+    total_fgm = sum(fgm),
+    total_fga = sum(fga),
+    total_fg3m = sum(fg3m),
+    total_fg3a = sum(fg3a),
+    total_min_played = sum(min_played),
+    overall_fg_pct = total_fgm / total_fga,
+    total_pts = sum(pts),
+    overall_pm = sum(plus_minus)
+  )
+
+starters_unique <- starters %>% 
+  distinct(player_name)
+
+starters_final <- starters_sum %>%
+  inner_join(starters_unique, by = "player_name") %>% 
+  slice(1)
+
+starters <- starters %>% 
+  select(c(player_name, start_position, team_city, season, home_team_id, visitor_team_id, team_id, game_id, home_team_wins, pts_home, pts_away, min_played, fgm, fga, fg_pct, fg3m, fg3a, fg3_pct, ftm, fta, ft_pct, oreb, dreb, reb, ast, stl, blk, to, pf, pts, plus_minus))
+
+## Creating a binary variable indicating if the player won or loss the game (1 indicates a win for the team the player is on)
+starters <- starters %>% 
+  mutate(player_game_outcome = ifelse((team_id == home_team_id & home_team_wins == 1) | (team_id == visitor_team_id & home_team_wins == 0), 1, 0))
+```
+
+## Univariate exploration (Jhet)
+
+```{r}
+# Field goal percentage
+ggplot(starters, aes(fg_pct)) + geom_histogram(binwidth = .02)
+```
+
+In the field goal percentage variable (% of field goal attempts that were successful), we see a vague shadow of a normal distribution. The distribution is far from smooth, but most of these weird spikes can be explained quite easily. Because each observation is a player's stats from a single game, there will be a lot of repeating values in cases where the player attempts very few shots.
+
+```{r}
+# Field goal percentage (career)
+ggplot(starters_final, aes(overall_fg_pct)) + geom_histogram(bins = 200)
+```
+
+Thus, when we instead look at the field goal percentage over the player's entire career, the distribution becomes a lot less discrete, though it does still have spikes at common values among low shot volumes such as 0%, 100%, and 50%.
+
+```{r}
+# Plus minus variable -- Measure of player impact, looks at a team's point differential when a player is on the floor compared with when he's not
+ggplot(starters, aes(plus_minus)) + geom_histogram(binwidth = 1)
+```
+
+The "plus minus" stat is a measure of the team's performance while a player is on the court. It is the difference between the amount of points gained by both teams while the player is active. This variable has a very nice normal distribution about 0, which makes sense as the plus minus of each team will be the inverse of the other at any given point. So even though the variable is based on the player's active time, it is reasonable to expect a relatively (but not exactly) symmetrical distribution around 0.
+
+```{r}
+# Points scored
+ggplot(starters, aes(pts)) + geom_histogram(binwidth = 1)
+```
+
+The distribution of the points variable is also very reasonable. There is a spike at 0, as not every player's role is focused on scoring, and then a steep upward trend until around 10 points. After the 10 point mark the frequency starts dropping off quickly, and observations greater than \~45 are very rare. An interesting feature of this graph is that there seem to be regularly appearing spikes throughout the curve, showing much more in the lower point ranges. On closer examination, we can see that these spikes occur on multiples of 2. This is because scoring an even amount of points is much more likely than an odd amount, as the only way to score an odd amount is with a free throw or a 3 pointer.
+
+```{r}
+# Steals
+ggplot(starters, aes(stl)) + geom_histogram(binwidth = 1)
+summary(starters$stl)
+```
+
+The distribution of the steals variable is a very predictable downward curve. Steals are not very common, so most players get 0 during their time in a game. In fact, the maximum number of steals in a game in the data set is 10, with the average being just under 1.
+
+```{r}
+# Total rebounds
+ggplot(starters, aes(reb)) + geom_histogram(binwidth = 1)
+```
+
+Finally, the rebounds variable is very similar to the points variable, with a dramatic right skew to the histogram. The data peaks at around 3-4 and begins dropping off quickly, with observations greater than 20 being very rare.
+
+## Trend exploration (Jhet)
+
+### Shot Volume, Percentage, and Points Scored
+
+The first possible trend we wanted to investigate was how shot volume (# of shots attempted) influenced the shot percentage and number of points.
+
+```{r}
+# Investigating how shot volume affects shot percentage and points scored
+# Field goal percentage
+ggplot(starters_final, aes(total_fga)) + geom_histogram(bins = 100)
+arrange(starters_final, desc(total_fga)) %>% head(5) %>% select(player_name, total_fga)
+summary(starters_final$total_fga)
+```
+
+First, the distribution of the total_fga (total field goals attempted over the player's career) variable is incredibly right skewed (blame LeBron). The overwhelming majority of players lie on the extreme left end of the distribution with an average value of 1845, and a median of 439. This means that the average NBA player is over 30 thousand points behind LeBron James in this stat.
+
+```{r}
+
+ggplot(starters_final) +
+  geom_point(aes(x=overall_fg_pct, y=total_fga), alpha=0.2)
+
+ggplot(starters_final) +
+  geom_point(aes(x=overall_fg_pct, y=total_pts), alpha=0.2)
+```
+
+The charts above compare the total_fga and total_pts (total points over a player's career) against overall_fg_pct (the player's field goal percentage over their career). Both distributions are very similar, with high concentration at 0% and 100%, and a very dense grouping around 40-50%. Overall, it seems that shot percentage has little relationship with shot volume or total points scored, with LeBron James leading both y variables by a large margin yet sitting very close to a 50% success rate. In fact, a higher shot volume in general trends towards a sub-50 shot percentage.
+
+```{r}
+ggplot(starters_final) +
+  geom_point(aes(x=total_min_played, y=total_pts), alpha=0.2)
+```
+
+The similarity of the previous two charts is to be expected, as the total amount of points scored is likely to increase alongside the amount of shots attempted. This expectations is very predictably demonstrated in the above chart, with an incredibly linear relationship between the two being shown.
+
+### Plus Minus vs. the World
+
+Next, the plus minus stat stands out as a potentially valuable measure of player performance, so we examined how it interacts with other stats.
+
+```{r}
+#Investigating how different stats affect plus minus
+ggplot(starters_final, aes(overall_pm)) + geom_histogram(binwidth = 50)
+```
+
+Compared to the gentle and symmetrical distribution of the game-wise plus minus variable, the career-wise measure is very reminiscent of the total_fga variable (thanks LeBron). There is an incredibly large spike around 0, the majority of the data being centered around this spike.
+
+In order to make this distribution more normal, we next looked at plus minus per minute (career-wise):
+
+```{r}
+#Plus minus per min
+ggplot(starters_final, aes(overall_pm/total_min_played)) + geom_histogram(bins = 100)
+arrange(starters_final, desc(overall_pm/total_min_played)) %>%
+  head(10) %>% select(player_name, overall_pm, total_min_played)
+```
+
+While the distribution is slightly more reasonable, the top players by this measure are names we had never heard of, all of whom had relatively low total minutes values. Thus, plus minus per minute is a very flawed performance measure.
+
+```{r}
+ggplot(starters_final) +
+  geom_point(aes(x=overall_pm, y=total_pts), alpha=0.2)
+```
+
+Overall plus minus and total points have an interestingly almost parabolic distribution. Most of the observations are crowded around 0 and under 5000 total points, but in general the outliers in the total points stat have incredibly high overall plus minuses.
+
+```{r}
+ggplot(starters_final) +
+  geom_point(aes(x=overall_pm, y=total_min_played), alpha=0.2)
+```
+
+In plotting total minutes against total plus minus, we get a very similar distribution, with crowding around 0 in the lower minute ranges, with outliers having large plus minuses.
+
+The similarities between these two graphs can again be explained by a linear relationship between the y variables:
+
+```{r}
+ggplot(starters_final) +
+  geom_point(aes(x=total_fga, y=total_pts), alpha=0.2)
+```
+
+Just like total points and shot volume, the total points scored by a player has a very strong linear relationship with their total minutes played, which makes intuitive sense.
+
+## Investigation of starters data set (Saul)
+
+```{r}
+# Data looks good
+summary(starters)
+```
+
+### An exploration of the big 5 and their relationship to game outcomes (Points, Assists, Steals, Rebounds, and Turnovers)
+
+```{r}
+#Points
+ggplot(starters) +
+  geom_boxplot(aes(y=pts, x=as.factor(player_game_outcome)), alpha=0.2)
+```
+
+```{r}
+# Assists
+ggplot(starters) +
+  geom_boxplot(aes(y=ast, x=as.factor(player_game_outcome)), alpha=0.2)
+```
+
+```{r}
+# Steals
+ggplot(starters) +
+  geom_boxplot(aes(y=stl, x=as.factor(player_game_outcome)), alpha=0.2)
+```
+
+```{r}
+# Rebounds
+ggplot(starters) +
+  geom_boxplot(aes(y=reb, x=as.factor(player_game_outcome)), alpha=0.2)
+```
+
+```{r}
+# Turnovers
+ggplot(starters) +
+  geom_boxplot(aes(y=to, x=as.factor(player_game_outcome)), alpha=0.2)
+```
+
+### The big 5 and the plus minus
+
+**Filtering by season to deal with long wait times observations**
+
+```{r}
+# Points
+starters2 <- filter(starters, season == 2022)
+ggplot(starters2, aes(x=as.factor(pts), y=plus_minus, alpha=0.2)) +
+  geom_boxplot()
+```
+
+```{r}
+# Steals
+ggplot(starters2, aes(x=as.factor(stl), y=plus_minus, alpha=0.2)) +
+  geom_boxplot() + xlab('Steals') + ylab('Plus Minus')
+```
+
+```{r}
+# Assists
+ggplot(starters2, aes(x=as.factor(ast), y=plus_minus, alpha=0.2)) +
+  geom_boxplot()
+```
+
+```{r}
+# Rebounds
+ggplot(starters2, aes(x=as.factor(reb), y=plus_minus, alpha=0.2)) +
+  geom_boxplot()
+```
+
+```{r}
+# Turnovers
+ggplot(starters2, aes(x=as.factor(to), y=plus_minus, alpha=0.2)) +
+  geom_boxplot()
+```
+
+```{r}
+# Game outcome
+ggplot(starters) +
+  geom_boxplot(aes(y=plus_minus, x=as.factor(player_game_outcome)), alpha=0.2) +
+  xlab('Game Outcome') + ylab('Plus Minus')
+#yeah that makes sense
+```
+
+### What if we use statistical model building techniques to determine what factors have the greatest influence on the plus minus variable
+
+```{r}
+#BEST SUBSETS RAAAAAAHHHH
+stats <- starters %>% select(fgm:plus_minus, min_played)
+pm.subsets <- regsubsets(data=stats, plus_minus ~ .)
+plot(pm.subsets, scale='adjr2')
+plot(pm.subsets, scale='bic')
+plot(pm.subsets, scale='Cp')
+
+# stepwise?
+# null.model <- lm(plus_minus ~ 1, data=stats)
+# full.model <- lm(plus_minus ~ ., data=stats)
+# 
+# step(null.model, 
+#      scope=list(lower=null.model, upper=full.model),
+#      direction='both', trace=1) |> summary()
+```
+
+From best subsets there are a few standout variables for predicting plus minus: field goals attempted, defensive rebounds, steals, and rebounds to name a few. Interestingly, points seems to have very little effect on the model's accuracy.
+
+```{r}
+stats2 <- starters %>% select(fgm:plus_minus, min_played, player_game_outcome)
+outcome.subsets <- regsubsets(data=stats2, player_game_outcome ~ .)
+plot(outcome.subsets, scale='adjr2')
+plot(outcome.subsets, scale='bic')
+plot(outcome.subsets, scale='Cp')
+```
+
+## Initial Modelling
+
+```{r}
+mod1 <- lm(data = starters, formula = plus_minus ~ stl + reb + pts + fg_pct + blk + pf)
+gtsummary::tbl_regression(mod1)
+```
+
+## Stratifying by season
+
+```{r}
+starters_season <- starters %>%
+  group_by(player_name, season) %>%
+  arrange(player_name) %>%
+  summarise(
+    total_min_played = sum(min_played),
+    overall_pm = sum(plus_minus),
+    pm_per_min = overall_pm / total_min_played,
+  )
+
+# for(i in 2003:2022){
+#   starters_season %>% filter(season == i) %>% arrange(desc(overall_pm)) %>% head(n=20) %>% print()
+# }
+
+starters_season <- starters_season %>%
+  group_by(season) %>%
+  mutate(
+    season_avg_pm = mean(overall_pm),
+    season_pm_sd = sd(overall_pm),
+  )
+
+starters_season <- starters_season %>%
+  group_by(player_name, season) %>%
+  mutate(
+    performance = ifelse(overall_pm > season_avg_pm + season_pm_sd, "high",
+                     ifelse(overall_pm < season_avg_pm - season_pm_sd, "low", "avg"))
+  )
+```
+
+```{r}
+## Expand starters season by joining starters and starters_season df
+starters_season2 <- merge(starters, starters_season, by = c('player_name', 'season'), relationship = 'many-to-many')
+```
+
+```{r}
+starters_season2020 <- filter(starters_season2, season == 2020 & team_city == 'Los Angeles')
+```
+
+```{r}
+starters_season2 <- starters_season2 %>%
+  mutate(
+    star = ifelse(performance == "high", 1, 0),
+    avg = ifelse(performance == "avg", 1, 0),
+    low = ifelse(performance == "low", 1, 0),
+  )
+
+team_games <- starters_season2 %>%
+  group_by(team_id, game_id) %>%
+  summarise(
+    num_star = sum(star),
+    num_avg = sum(avg),
+    num_low = sum(low))%>% 
+  filter(num_star + num_avg + num_low == 5)
+
+team_season_final <- starters_season2 %>% 
+  select(home_team_id, visitor_team_id, home_team_wins, game_id, team_id) %>% 
+  group_by(game_id, team_id) %>% 
+  unique()
+```
+
+```{r}
+team_games <- inner_join(team_games, team_season_final, by = c('game_id', 'team_id'), relationship = "many-to-many")
+
+team_games <- team_games %>% 
+  mutate(game_outcome = ifelse((team_id == home_team_id & home_team_wins == 1) | (team_id == visitor_team_id & home_team_wins == 0), 1, 0))
+
+cols<-c('num_star', 'num_avg', 'num_low')
+team_games$composition <- do.call(paste, c(team_games[cols], sep = "-")) 
+
+team_games$composition <- relevel(factor(team_games$composition), ref = "0-5-0")
+
+tab <- table(team_games$composition)
+team_games_filtered <- team_games[team_games$composition %in% names(tab)[tab>1000],]
+```
+
+```{r}
+ggplot(team_games, aes(x = factor(num_star), fill = as.factor(game_outcome))) +
+  geom_bar() +
+  labs(x = "Number of Stars", y = "Count") +
+  ggtitle("Game Outcomes by Number of Stars")
+
+# ggplot(cabbage_exp, aes(x = Date, y = Weight, fill = Cultivar)) +
+#   geom_col(position = "fill")
+
+ggplot(team_games, aes(x = composition, fill = as.factor(game_outcome))) +
+  geom_bar(position = "fill") +
+  labs(x = "Team Composition") +
+  ggtitle("Game Outcomes by Team Composition")
+
+ggplot(team_games_filtered, aes(x = composition, fill = as.factor(game_outcome))) +
+  geom_bar(position = "fill") +
+  labs(x = "Team Composition") +
+  ggtitle("Game Outcomes by Team Composition - Filtered")
+  
+```
+
+```{r}
+#split data into training and testing, 80 20
+init_split <- initial_split(team_games, prop = 0.8)
+train <- training(init_split)
+test  <- testing(init_split)
+
+#linear model
+glm_star <- glm(data = train, formula = game_outcome ~ num_star, family =  "binomial")
+glm_avg <- glm(data = train, formula = game_outcome ~ num_avg, family =  "binomial")
+glm_low <- glm(data = train, formula = game_outcome ~ num_low, family =  "binomial")
+
+tbl_regression(glm_star)
+tbl_regression(glm_avg)
+tbl_regression(glm_low)
+
+
+predicted_values <- predict(glm_star, newdata = test)
+
+
+glm_total_predictions <- ifelse(predicted_values > 0.5, 1, 0)
+
+#display accuracy
+accuracy <- mean(glm_total_predictions == test$game_outcome)
+accuracy
+
+glm_comp <- glm(data = train, formula = game_outcome ~ composition, family =  "binomial")
+summary(glm_comp)
+
+tbl_regression(glm_comp)
+
+blorr::blr_model_fit_stats(glm_comp)
+
+
+predicted_values <- predict(glm_comp, newdata = test)
+
+
+glm_total_predictions <- ifelse(predicted_values > 0.5, 1, 0)
+
+#display accuracy
+accuracy <- mean(glm_total_predictions == test$game_outcome)
+accuracy
+
+init_split <- initial_split(team_games_filtered, prop = 0.8)
+train <- training(init_split)
+test  <- testing(init_split)
+
+glm_comp_filtered <- glm(data = train, formula = game_outcome ~ composition, family =  "binomial")
+tbl_regression(glm_comp_filtered)
+
+blorr::blr_model_fit_stats(glm_comp_filtered)
+```
