@@ -1,7 +1,7 @@
 # Sports vs Esports comparison
 This project was done in a group of 4 to compare the player impact on Basketball vs Counterstrike Global Offensive. We wanted to see the different impact of having star players, average players, and below average players.
 ## Project Components
-- R qmd code for csgo analysis `csgo_analysis.qmd` and basketball analysis `basketball_analysis.qmd`
+- R qmd code for csgo analysis `csgo_analysis.qmd` and basketball analysis `basketball_analysis.qmd`. Datasets sourced from https://www.kaggle.com/datasets/nathanlauga/nba-games and https://www.kaggle.com/datasets/mateusdmachado/csgo-professional-matches
 - pdf renders of these markdowns `csgo_analysis.pdf` and `basketball_analysis.pdf`
 - written report from results of comparison `csgo_basketball_analysis_report.pdf`
 
